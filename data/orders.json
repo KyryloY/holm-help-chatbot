@@ -1,0 +1,56 @@
+[
+  {
+    "order_id": "H-1042",
+    "product": "linen cushions",
+    "amount_eur_cents": 8900,
+    "status": "in_transit",
+    "shipped_date": "2026-10-05",
+    "delivered_date": null,
+    "notes": "Shipped from Hamburg warehouse"
+  },
+  {
+    "order_id": "H-1048",
+    "product": "wool blanket",
+    "amount_eur_cents": 12900,
+    "status": "delivered",
+    "shipped_date": "2026-10-04",
+    "delivered_date": "2026-10-06",
+    "notes": "Return window open"
+  },
+  {
+    "order_id": "H-0991",
+    "product": "large rug",
+    "amount_eur_cents": 21000,
+    "status": "delivered",
+    "shipped_date": "2026-08-25",
+    "delivered_date": "2026-08-29",
+    "notes": "Return window closed"
+  },
+  {
+    "order_id": "H-1107",
+    "product": "custom curtain set",
+    "amount_eur_cents": 89000,
+    "status": "delivered",
+    "shipped_date": "2026-10-01",
+    "delivered_date": "2026-10-03",
+    "notes": "Return requires simulated staff approval"
+  },
+  {
+    "order_id": "H-0770",
+    "product": "cotton throw",
+    "amount_eur_cents": 6400,
+    "status": "payment_failed",
+    "shipped_date": null,
+    "delivered_date": null,
+    "notes": "Payment failed; never shipped"
+  },
+  {
+    "order_id": "H-1203",
+    "product": "cotton bedding set",
+    "amount_eur_cents": 9900,
+    "status": "delivered",
+    "shipped_date": "2026-09-20",
+    "delivered_date": "2026-09-24",
+    "notes": "Exactly on the last eligible return day when DEMO_TODAY is 2026-10-08"
+  }
+]
