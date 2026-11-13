@@ -55,18 +55,18 @@ Exact scripts: [`docs/scenarios.md`](docs/scenarios.md)
 12. Clarify then status — `Where is my order?` → `H-1042`
 13. Handoff ticket — `I want to speak to a human agent`
 
-## Screenshots (earlier portfolio capture)
+## Screenshots (real local run)
 
 Captions: [`screenshots/CAPTIONS.md`](screenshots/CAPTIONS.md)
 
 | Screenshot | Path |
 |------------|------|
 | Welcome / stack | [`screenshots/01-welcome.png`](screenshots/01-welcome.png) |
-| Shipment H-1042 | [`screenshots/02-shipment-H-1042.png`](screenshots/02-shipment-H-1042.png) |
-| Blocked request | [`screenshots/03-blocked-request.png`](screenshots/03-blocked-request.png) |
-| Eligible return H-1048 | [`screenshots/04-eligible-return-H-1048.png`](screenshots/04-eligible-return-H-1048.png) |
+| List demo orders | [`screenshots/02-list-orders.png`](screenshots/02-list-orders.png) |
+| Ask for order ID | [`screenshots/03-ask-slot.png`](screenshots/03-ask-slot.png) |
+| Status after clarify | [`screenshots/04-status-H-1042.png`](screenshots/04-status-H-1042.png) |
 | Approval pause H-1107 | [`screenshots/05-approval-pause-H-1107.png`](screenshots/05-approval-pause-H-1107.png) |
-| Approved + label | [`screenshots/06-approval-approved-H-1107.png`](screenshots/06-approval-approved-H-1107.png) |
+| Blocked request | [`screenshots/06-blocked.png`](screenshots/06-blocked.png) |
 
 ## Quick start (Windows PowerShell 5.1)
 
