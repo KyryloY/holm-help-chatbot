@@ -45,6 +45,8 @@ MODEL = os.getenv("MODEL", "google_genai:gemini-3.7-flash")
 ORDERS_MODE = os.getenv("ORDERS_MODE", "orders").strip().lower()
 CHECKPOINT_DB = Path(os.getenv("CHECKPOINT_DB", str(DATA_DIR / "checkpoints.db")))
 JOURNAL_DB = Path(os.getenv("JOURNAL_DB", str(DATA_DIR / "returns_journal.db")))
+TICKETS_DB = Path(os.getenv("TICKETS_DB", str(DATA_DIR / "tickets.db")))
+CHAINLIT_DB = Path(os.getenv("CHAINLIT_DB", str(DATA_DIR / "chainlit.db")))
 
 BOT_NAME = "Holm Help"
 STORE_NAME = "Holm Home Textiles"

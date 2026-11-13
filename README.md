@@ -2,14 +2,14 @@
 
 **Stack: LangGraph + Chainlit**
 
-Customer-support chatbot demo for the fictional store **Holm Home Textiles** (Hamburg).  
-Bot name: **Holm Help**. Built as a public portfolio demo of a **controlled, observable** workflow.
+Customer-support chatbot for the fictional store **Holm Home Textiles** (Hamburg).  
+Bot name: **Holm Help**. Evolving from a controlled portfolio demo toward a **capable multi-turn assistant** — still observable, still gated for money/returns.
 
 | | |
 |---|---|
-| Graph | Explicit LangGraph `StateGraph` with stable node names |
+| Graph | Explicit LangGraph `StateGraph` (`guard` → `assistant` tool loop + gated return path) |
 | UI | Chainlit 2.x (single local process) |
-| Persistence | SQLite checkpoints + local return journal |
+| Persistence | SQLite checkpoints + return journal + tickets + optional Chainlit data layer |
 | Model | `langchain.chat_models.init_chat_model` via `MODEL` |
 
 ## Graph
@@ -17,28 +17,24 @@ Bot name: **Holm Help**. Built as a public portfolio demo of a **controlled, obs
 ```mermaid
 flowchart TD
   START([START]) --> guard
-  guard -->|blocked request / card| blocked
-  guard -->|ok| route
-  route --> orders
-  route --> policy
-  route --> smalltalk
-  route --> handoff
-  orders -->|status| answer
-  orders -->|return request| policy
-  orders -->|service down| handoff
-  policy -->|policy question| answer
-  policy -->|return request| decide
-  decide -->|eligible / idempotent| create_return
-  decide -->|over EUR 150| approval
+  guard -->|blocked_or_card| blocked
+  guard --> assistant
+  assistant -->|needs_order_id| ask_slot
+  ask_slot --> END1([END_wait_user])
+  assistant -->|tool_calls| tools
+  tools --> assistant
+  assistant -->|return_ready| prepare_return
+  prepare_return --> decide
+  decide -->|eligible| create_return
+  decide -->|over_EUR_150| approval
   decide -->|refuse| answer
-  decide -->|outage| handoff
-  approval -->|Simulate staff approval| create_return
-  approval -->|Simulate staff rejection| answer
+  approval -->|approved| create_return
+  approval -->|rejected| answer
   create_return --> answer
-  smalltalk --> answer
-  blocked --> END([END])
-  handoff --> END
-  answer --> END
+  assistant -->|handoff| handoff
+  blocked --> END2([END])
+  handoff --> END2
+  answer --> END2
 ```
 
 ## Principal demo scenarios
@@ -55,8 +51,11 @@ Exact scripts: [`docs/scenarios.md`](docs/scenarios.md)
 8. Service outage — `ORDERS_MODE=down` + `Where is H-1042?`
 9. Last eligible day — `I want to return the bedding set from H-1203.`
 10. Idempotent duplicate return — same conversation / same order
+11. List demo orders — `give me list of existing orders`
+12. Clarify then status — `Where is my order?` → `H-1042`
+13. Handoff ticket — `I want to speak to a human agent`
 
-## Screenshots (real local run)
+## Screenshots (earlier portfolio capture)
 
 Captions: [`screenshots/CAPTIONS.md`](screenshots/CAPTIONS.md)
 
@@ -107,17 +106,21 @@ pytest -q
 
 - Each Chainlit chat session has `cl.context.session.id`.
 - Holm Help uses that value as LangGraph `configurable.thread_id`.
-- When `approval` calls `interrupt()`, the SQLite checkpointer stores the paused graph state for that thread.
-- Action callbacks resume with `Command(resume={"decision": "approved"|"rejected"})` on the **same** `thread_id`.
-- Buttons do **not** supply a trusted order ID or invent approval state; the callback verifies a pending interrupt first.
+- Multi-turn slot filling (`awaiting_slot=order_id`) and `interrupt()` approval both resume on that same thread via the SQLite checkpointer.
+- Action callbacks resume with `Command(resume={"decision": "approved"|"rejected"})` after verifying a pending interrupt.
+- Buttons do **not** supply a trusted order ID or invent approval state.
 
-Chainlit does **not** persist chat transcript history by default. Restarting the UI clears the visible chat unless you add a data layer (out of scope). The LangGraph checkpoint **does** persist a paused approval for the local SQLite file while the process/DB remain.
+### Persistence (honest)
+
+- **LangGraph checkpoints** (`CHECKPOINT_DB`): persist paused approval and multi-turn slot state for the local process/DB.
+- **Return journal** / **tickets**: local SQLite simulations.
+- **Chainlit transcript** (`CHAINLIT_PERSIST_CHAT=1`): optional local `SQLAlchemyDataLayer` on `CHAINLIT_DB`. If the data layer fails to load, the app still runs; checkpoints remain. Do not assume cloud sync or cross-device history.
 
 ## Project layout
 
 ```text
-app.py                 Chainlit entrypoint
-src/holm_help/         Graph, tools, guard, decide, config
+app.py                 Chainlit entrypoint + optional local data layer
+src/holm_help/         Graph, tools, slots, tickets, guard, decide
 data/orders.json       Six synthetic orders (ISO dates)
 data/policy.md         Return policy (English)
 docs/scenarios.md      Reproducible scenario scripts
@@ -125,11 +128,17 @@ tests/                 Fake-model automated tests
 screenshots/           Captured UI paths
 ```
 
-## Tools (exactly three)
+## Tools
 
-1. `lookup_order` — reads `data/orders.json`; unknown IDs return `found: false`
+Bound to the free assistant loop:
+
+1. `lookup_order` — `data/orders.json`; unknown IDs return `found: false`
 2. `read_return_policy` — full `data/policy.md`
-3. `create_return` — idempotent SQLite journal + `SIM-LABEL-…` (simulation only)
+3. `list_demo_orders` — synthetic demo catalog (not a real customer list)
+
+Gated write (deterministic path only — **not** bound to the free tool loop):
+
+4. `create_return` — idempotent SQLite journal + `SIM-LABEL-…`
 
 Eligibility, the EUR 150 threshold (`RETURN_APPROVAL_EUR = 150`), approval state, and permission to call `create_return` are enforced in **deterministic application code** — never by the model alone.
 
@@ -137,7 +146,7 @@ Eligibility, the EUR 150 threshold (`RETURN_APPROVAL_EUR = 150`), approval state
 
 - Synthetic orders only; **anonymous** access; **no** order-ownership verification
 - Staff approval is a **simulation** (buttons: “Simulate staff approval / rejection”)
-- Return labels are **simulated**; **no** real carrier labels
+- Return labels and handoff tickets are **simulated**; **no** real carrier labels or staff queue
 - **No refunds** are issued
 - Local-only SQLite persistence; not a production deployment
 - Guard detects the documented blocked-request and card scenarios — **not** a universal prompt-injection defense

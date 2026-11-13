@@ -1,32 +1,38 @@
 """
-Holm Help — Chainlit UI for the LangGraph customer-support demo.
+Holm Help — Chainlit UI for the LangGraph customer-support assistant.
 
 Chainlit session.id is used as the LangGraph thread_id so interrupt()/Command(resume=...)
-resumes the same checkpointed conversation.
+and multi-turn slots resume on the same checkpointed conversation.
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import chainlit as cl
 from dotenv import load_dotenv
 from langgraph.types import Command
 
-from holm_help.config import BOT_NAME, CHECKPOINT_DB, JOURNAL_DB, MODEL, STORE_NAME
+from holm_help.config import (
+    BOT_NAME,
+    CHAINLIT_DB,
+    CHECKPOINT_DB,
+    JOURNAL_DB,
+    MODEL,
+    STORE_NAME,
+    TICKETS_DB,
+)
 from holm_help.graph import build_graph, initial_state
 from holm_help.journal import init_journal
 from holm_help.model import get_chat_model
+from holm_help.tickets import init_tickets
 
 load_dotenv()
 
-# Align Gemini key naming for LangChain google_genai.
 if not os.getenv("GOOGLE_API_KEY") and os.getenv("GEMINI_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
 
-# Module-level async checkpointer lifecycle (one local process).
 _checkpointer_cm = None
 _checkpointer = None
 _graph = None
@@ -48,6 +54,7 @@ async def _ensure_graph():
 
     CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
     init_journal(JOURNAL_DB)
+    init_tickets(TICKETS_DB)
 
     _checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB))
     _checkpointer = await _checkpointer_cm.__aenter__()
@@ -60,7 +67,6 @@ async def _ensure_graph():
 
 
 def _thread_config() -> dict[str, Any]:
-    """Map Chainlit session ID → LangGraph thread_id."""
     session_id = cl.context.session.id
     return {"configurable": {"thread_id": session_id}}
 
@@ -73,7 +79,6 @@ def _has_pending_interrupt(snapshot: Any) -> bool:
         interrupts = getattr(task, "interrupts", None) or ()
         if interrupts:
             return True
-    # Newer/older APIs may expose next nodes waiting on interrupt.
     nxt = getattr(snapshot, "next", None) or ()
     if "approval" in nxt:
         return True
@@ -81,23 +86,21 @@ def _has_pending_interrupt(snapshot: Any) -> bool:
 
 
 async def _emit_node_steps(visited: list[str], tool_calls: list[str], values: dict[str, Any]) -> None:
-    """Show real executed nodes and tool calls as Chainlit Steps."""
     for node in visited:
         async with cl.Step(name=node, type="run") as step:
             step.input = _safe_step_summary(
                 {
                     "route": values.get("route"),
-                    "order_id": values.get("order_id"),
+                    "order_id": values.get("order_id") or values.get("active_order_id"),
                     "decision": values.get("decision"),
+                    "awaiting_slot": values.get("awaiting_slot"),
                 }
             )
             out: dict[str, Any] = {"node": node}
-            if node == "orders" and values.get("order"):
-                order = values["order"]
-                out["order_status"] = order.get("status")
-                out["found"] = True
-            elif node == "orders":
-                out["found"] = values.get("order_found", False)
+            if node in {"orders", "lookup_status", "prepare_return"}:
+                out["found"] = values.get("order_found")
+                if values.get("order"):
+                    out["order_status"] = values["order"].get("status")
             if node == "decide":
                 out["decision"] = values.get("decision")
                 out["reason"] = values.get("decision_reason")
@@ -109,13 +112,20 @@ async def _emit_node_steps(visited: list[str], tool_calls: list[str], values: di
                 out["blocked_reason"] = values.get("blocked_reason")
                 if values.get("card_masked"):
                     out["card_masked"] = values.get("card_masked")
+            if node == "handoff":
+                out["ticket_id"] = values.get("ticket_id")
+            if node == "ask_slot":
+                out["awaiting_slot"] = values.get("awaiting_slot")
             if node == "answer":
                 out["reply_preview"] = _safe_step_summary(values.get("reply"), limit=200)
             step.output = _safe_step_summary(out)
 
     for tool in tool_calls:
         async with cl.Step(name=f"tool:{tool}", type="tool") as step:
-            step.input = {"tool": tool, "order_id": values.get("order_id")}
+            step.input = {
+                "tool": tool,
+                "order_id": values.get("order_id") or values.get("active_order_id"),
+            }
             if tool == "lookup_order":
                 step.output = {
                     "found": values.get("order_found"),
@@ -123,6 +133,8 @@ async def _emit_node_steps(visited: list[str], tool_calls: list[str], values: di
                 }
             elif tool == "read_return_policy":
                 step.output = {"policy_loaded": bool(values.get("policy_text"))}
+            elif tool == "list_demo_orders":
+                step.output = {"listed": bool(values.get("demo_orders_summary") or values.get("reply"))}
             elif tool == "create_return":
                 step.output = {
                     "label_number": values.get("label_number"),
@@ -131,7 +143,6 @@ async def _emit_node_steps(visited: list[str], tool_calls: list[str], values: di
 
 
 async def _handle_interrupt(interrupt_value: Any) -> None:
-    """Show approval pause BEFORE any create_return step."""
     payload = interrupt_value
     if hasattr(interrupt_value, "value"):
         payload = interrupt_value.value
@@ -178,7 +189,6 @@ async def _run_graph(input_payload: Any) -> None:
     config = _thread_config()
     cl.user_session.set("thread_id", config["configurable"]["thread_id"])
 
-    # Collect updates while streaming for step visibility.
     final_values: dict[str, Any] = {}
     visited: list[str] = []
     tool_calls: list[str] = []
@@ -186,7 +196,6 @@ async def _run_graph(input_payload: Any) -> None:
     interrupt_payload = None
 
     async for event in graph.astream(input_payload, config=config, stream_mode="updates"):
-        # event is {node_name: update_dict} or interrupt markers depending on version
         if not isinstance(event, dict):
             continue
         for node_name, update in event.items():
@@ -201,7 +210,6 @@ async def _run_graph(input_payload: Any) -> None:
                 if "tool_calls" in update:
                     tool_calls = list(update["tool_calls"])
 
-    # Also inspect state for interrupts (authoritative).
     state = await graph.aget_state(config)
     if state and state.values:
         final_values = {**final_values, **dict(state.values)}
@@ -210,13 +218,11 @@ async def _run_graph(input_payload: Any) -> None:
 
     if state and _has_pending_interrupt(state):
         interrupted = True
-        # Prefer interrupt payloads from tasks.
         for task in getattr(state, "tasks", None) or ():
             for item in getattr(task, "interrupts", None) or ():
                 interrupt_payload = item
                 break
 
-    # Emit only newly completed nodes (avoid replaying the whole path on resume).
     previously_emitted = list(cl.user_session.get("emitted_nodes") or [])
     previously_emitted_tools = list(cl.user_session.get("emitted_tools") or [])
 
@@ -224,7 +230,6 @@ async def _run_graph(input_payload: Any) -> None:
     visible_tools = [t for t in tool_calls if t not in previously_emitted_tools]
 
     if interrupted:
-        # Pause before create_return; show approval via dedicated interrupt UI.
         visible_visited = [
             n for n in visible_visited if n not in {"approval", "create_return"}
         ]
@@ -245,26 +250,77 @@ async def _run_graph(input_payload: Any) -> None:
     await cl.Message(content=reply).send()
 
 
+def _try_enable_local_data_layer():
+    """Optionally register a local SQLite Chainlit data layer (no cloud)."""
+    enabled = os.getenv("CHAINLIT_PERSIST_CHAT", "1").strip().lower() in {"1", "true", "yes"}
+    if not enabled:
+        return None
+    try:
+        from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+    except Exception:
+        return None
+
+    CHAINLIT_DB.parent.mkdir(parents=True, exist_ok=True)
+    conninfo = os.getenv(
+        "CHAINLIT_DB_URL",
+        f"sqlite+aiosqlite:///{CHAINLIT_DB.as_posix()}",
+    )
+
+    @cl.data_layer
+    def get_data_layer():
+        return SQLAlchemyDataLayer(conninfo=conninfo)
+
+    return get_data_layer
+
+
+_data_layer_factory = _try_enable_local_data_layer()
+
+
 @cl.on_chat_start
 async def on_chat_start() -> None:
-    await _ensure_graph()
+    graph = await _ensure_graph()
     thread_id = cl.context.session.id
     cl.user_session.set("thread_id", thread_id)
     cl.user_session.set("awaiting_approval", False)
     cl.user_session.set("emitted_nodes", [])
     cl.user_session.set("emitted_tools", [])
 
+    persist_note = (
+        "Local Chainlit SQLite data layer is enabled when dependencies allow "
+        f"(`{CHAINLIT_DB.name}`). LangGraph checkpoints always persist paused approvals "
+        "in the checkpoint DB for this process."
+        if _data_layer_factory
+        else (
+            "Chat transcript persistence via Chainlit data layer is not active "
+            "(optional dependency missing). LangGraph SQLite checkpoints still persist "
+            "paused approval state for this process."
+        )
+    )
+
+    paused_note = ""
+    try:
+        state = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+        if _has_pending_interrupt(state):
+            paused_note = (
+                "\n\nA **paused staff-approval** checkpoint already exists for this "
+                "`thread_id`. Use the simulation buttons if they are still visible, "
+                "or continue from the pending interrupt."
+            )
+            cl.user_session.set("awaiting_approval", True)
+    except Exception:
+        paused_note = ""
+
     await cl.Message(
         content=(
             f"**{BOT_NAME}** — support assistant for {STORE_NAME} (Hamburg).\n\n"
-            f"This is a **public portfolio demo** of a controlled LangGraph workflow "
-            f"with Chainlit observability.\n\n"
+            f"Capable multi-turn demo: clarify missing order IDs, list synthetic demo orders, "
+            f"policy Q&A, simulated returns, and simulated handoff tickets.\n\n"
             f"- Model: `{MODEL}`\n"
-            f"- LangGraph `thread_id` for this chat: `{thread_id}` "
-            f"(same as Chainlit session id)\n"
-            f"- Orders and returns are **synthetic**. Staff approval and labels are **simulated**. "
-            f"No real refunds. Anonymous access — order ownership is not verified.\n\n"
-            f"Try: `Where is order H-1042?` or see `docs/scenarios.md`."
+            f"- LangGraph `thread_id`: `{thread_id}` (same as Chainlit session id)\n"
+            f"- Orders/returns/tickets are **synthetic**. No real refunds. Anonymous access.\n"
+            f"- {persist_note}"
+            f"{paused_note}\n\n"
+            f"Try: `give me list of existing orders` or `Where is order H-1042?`"
         )
     ).send()
 
@@ -280,7 +336,8 @@ async def on_message(message: cl.Message) -> None:
         ).send()
         return
 
-    await _run_graph(initial_state(message.content))
+    thread_id = cl.context.session.id
+    await _run_graph(initial_state(message.content, thread_id=thread_id))
 
 
 async def _resume_with_decision(decision: str) -> None:
@@ -297,7 +354,6 @@ async def _resume_with_decision(decision: str) -> None:
         ).send()
         return
 
-    # Trust only the action name / explicit decision enum — never order_id from payload.
     if decision not in {"approved", "rejected"}:
         decision = "rejected"
 
@@ -307,8 +363,6 @@ async def _resume_with_decision(decision: str) -> None:
 
 @cl.action_callback("simulate_staff_approval")
 async def on_approve(action: cl.Action) -> None:
-    # Do not trust order_id from payload — only the decision enum is used after
-    # verifying a pending interrupt on this thread_id.
     await action.remove()
     await _resume_with_decision("approved")
 
@@ -317,14 +371,3 @@ async def on_approve(action: cl.Action) -> None:
 async def on_reject(action: cl.Action) -> None:
     await action.remove()
     await _resume_with_decision("rejected")
-
-
-@cl.on_stop
-async def on_stop() -> None:
-    # Keep checkpointer alive for the process; Chainlit may call stop per session.
-    pass
-
-
-@cl.on_chat_end
-async def on_chat_end() -> None:
-    pass

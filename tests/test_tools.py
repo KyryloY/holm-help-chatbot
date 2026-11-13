@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from holm_help.exceptions import OrdersServiceUnavailable
-from holm_help.tools import create_return, lookup_order, read_return_policy
+from holm_help.tools import create_return, list_demo_orders, lookup_order, read_return_policy
 
 
 def test_lookup_unknown_order_found_false():
@@ -43,3 +43,11 @@ def test_create_return_idempotent(tmp_path: Path):
     assert first["label_number"] == second["label_number"]
     assert second["idempotent_hit"] is True
     assert first["label_number"].startswith("SIM-LABEL-")
+
+
+def test_list_demo_orders():
+    result = list_demo_orders()
+    assert result["demo_only"] is True
+    ids = {item["order_id"] for item in result["orders"]}
+    assert "H-1042" in ids
+    assert "H-1048" in ids

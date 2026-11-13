@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-import re
+import uuid
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+
+from holm_help.slots import classify_intent_heuristic, extract_order_id, is_list_orders_request
 
 
 def _extract_text(messages: list[BaseMessage]) -> str:
@@ -26,36 +28,27 @@ def _extract_text(messages: list[BaseMessage]) -> str:
     return "\n".join(parts)
 
 
-def classify_intent_heuristic(text: str) -> dict[str, Any]:
-    """Rule-based intent used by the fake model and as a safe fallback."""
-    lower = text.lower()
-    order_match = re.search(r"\bH-\d{4}\b", text, re.I)
-    order_id = order_match.group(0).upper() if order_match else None
+def _last_human(messages: list[BaseMessage]) -> str:
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage) or getattr(msg, "type", None) == "human":
+            return str(msg.content)
+    return _extract_text(messages)
 
-    if any(w in lower for w in ("handoff", "human agent", "speak to a person", "real person")):
-        return {"route": "handoff", "order_id": order_id}
 
-    if any(w in lower for w in ("return", "send back", "take back")):
-        return {"route": "return", "order_id": order_id}
-
-    if any(w in lower for w in ("policy", "how long", "return window", "refund policy")):
-        return {"route": "policy", "order_id": order_id}
-
-    if order_id or any(w in lower for w in ("where is", "status", "track", "shipment", "order")):
-        return {"route": "orders", "order_id": order_id}
-
-    if any(w in lower for w in ("hello", "hi ", "thanks", "thank you", "good morning")):
-        return {"route": "smalltalk", "order_id": None}
-
-    return {"route": "smalltalk", "order_id": order_id}
+def _has_tool_results(messages: list[BaseMessage]) -> bool:
+    return any(isinstance(m, ToolMessage) or getattr(m, "type", None) == "tool" for m in messages)
 
 
 class FakeHolmModel(BaseChatModel):
-    """Minimal chat model that returns JSON intents or canned replies."""
+    """Minimal chat model that returns JSON intents, tool calls, or canned replies."""
 
     @property
     def _llm_type(self) -> str:
         return "fake-holm"
+
+    def bind_tools(self, tools: list[Any], **kwargs: Any) -> FakeHolmModel:
+        # Tools are chosen heuristically; binding is a no-op for the fake model.
+        return self
 
     def _generate(
         self,
@@ -66,27 +59,124 @@ class FakeHolmModel(BaseChatModel):
     ) -> ChatResult:
         text = _extract_text(messages)
         lower = text.lower()
+        user = _last_human(messages)
 
         if "classify the customer message" in lower or "intent classification" in lower:
-            # User message is usually last.
-            user = ""
-            for msg in reversed(messages):
-                if msg.type == "human":
-                    user = str(msg.content)
-                    break
-            if not user:
-                user = text
             payload = classify_intent_heuristic(user)
+            # Keep legacy "route" key for older prompts.
+            payload = {"route": payload["intent"], "intent": payload["intent"], "order_id": payload.get("order_id")}
             content = json.dumps(payload)
-        elif "write a short customer-support reply" in lower:
+            message = AIMessage(content=content)
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        if "write a short customer-support reply" in lower:
             content = (
                 "Thank you for contacting Holm Help. "
                 "I have reviewed your request and summarized the outcome above."
             )
-        else:
-            content = "Holm Help fake-model response."
+            message = AIMessage(content=content)
+            return ChatResult(generations=[ChatGeneration(message=message)])
 
-        message = AIMessage(content=content)
+        # Assistant-loop behaviour.
+        if _has_tool_results(messages):
+            # Produce a final reply from tool results already in the transcript.
+            tool_blobs = []
+            for msg in messages:
+                if isinstance(msg, ToolMessage) or getattr(msg, "type", None) == "tool":
+                    tool_blobs.append(str(msg.content))
+            joined = "\n".join(tool_blobs)
+            if "demo_only" in joined or '"orders"' in joined:
+                content = (
+                    "Here are the synthetic demo orders available in this portfolio app. "
+                    "This is not a real customer list — anonymous demo data only. "
+                    f"Details: {joined[:800]}"
+                )
+            elif '"found": true' in joined or '"found":true' in joined:
+                content = f"Here is the order information I found: {joined[:800]}"
+            elif '"found": false' in joined or '"found":false' in joined:
+                content = (
+                    "No matching order was found for that ID (found: false). "
+                    "I will not invent a shipment status."
+                )
+            elif "14th calendar day" in joined or "Return Policy" in joined:
+                content = (
+                    "Returns are accepted through the 14th calendar day after delivery "
+                    "(inclusive). Returns over EUR 150 need simulated staff approval. "
+                    "Holm Help does not issue refunds."
+                )
+            elif "orders_unavailable" in joined:
+                content = "Order information is temporarily unavailable."
+            else:
+                content = "I have reviewed the tool results for your request."
+            message = AIMessage(content=content)
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        intent = classify_intent_heuristic(user)
+        order_id = intent.get("order_id") or extract_order_id(user)
+
+        if intent["intent"] == "list_orders" or is_list_orders_request(user):
+            message = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "list_demo_orders",
+                        "args": {},
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        if intent["intent"] == "policy":
+            message = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "read_return_policy",
+                        "args": {},
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        if intent["intent"] == "orders" and order_id:
+            message = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "lookup_order",
+                        "args": {"order_id": order_id},
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        if intent["intent"] == "return":
+            # Return path is handled by graph routing once slots are ready.
+            content = json.dumps({"intent": "return", "order_id": order_id, "ready_for_return": True})
+            message = AIMessage(content=content)
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        if intent["intent"] == "handoff":
+            content = json.dumps({"intent": "handoff", "ready_for_handoff": True})
+            message = AIMessage(content=content)
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        if intent["intent"] == "smalltalk":
+            content = (
+                "Hello! I am Holm Help, the support assistant for Holm Home Textiles. "
+                "I can list demo orders, check a status by order ID, explain the return "
+                "policy, start a simulated return, or create a simulated handoff ticket."
+            )
+            message = AIMessage(content=content)
+            return ChatResult(generations=[ChatGeneration(message=message)])
+
+        message = AIMessage(content="Holm Help fake-model response.")
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     async def _agenerate(
