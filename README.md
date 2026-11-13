@@ -2,8 +2,11 @@
 
 **Stack: LangGraph + Chainlit**
 
-Customer-support chatbot for the fictional store **Holm Home Textiles** (Hamburg).  
-Bot name: **Holm Help**. Evolving from a controlled portfolio demo toward a **capable multi-turn assistant** — still observable, still gated for money/returns.
+Portfolio demo of a **controlled, observable** customer-support workflow for the fictional store **Holm Home Textiles** (Hamburg). Bot name: **Holm Help**.
+
+A reviewer should see graph nodes, tool calls, a human-in-the-loop pause, and an early blocked path in screenshots — without needing the author to narrate.
+
+**Portfolio one-pager:** [`docs/portfolio.md`](docs/portfolio.md) · **Scenarios:** [`docs/scenarios.md`](docs/scenarios.md)
 
 | | |
 |---|---|
@@ -67,6 +70,7 @@ Captions: [`screenshots/CAPTIONS.md`](screenshots/CAPTIONS.md)
 | Status after clarify | [`screenshots/04-status-H-1042.png`](screenshots/04-status-H-1042.png) |
 | Approval pause H-1107 | [`screenshots/05-approval-pause-H-1107.png`](screenshots/05-approval-pause-H-1107.png) |
 | Blocked request | [`screenshots/06-blocked.png`](screenshots/06-blocked.png) |
+| Approved + simulated label | [`screenshots/07-approval-approved-H-1107.png`](screenshots/07-approval-approved-H-1107.png) |
 
 ## Quick start (Windows PowerShell 5.1)
 

@@ -10,3 +10,4 @@ Captured from a real local Chainlit run with `MODEL=google_genai:gemini-3.7-flas
 | `04-status-H-1042.png` | After clarifying with `H-1042`: shipment status `in_transit` |
 | `05-approval-pause-H-1107.png` | High-value return path through `decide` → `approval` interrupt; both simulation buttons; no `create_return` yet |
 | `06-blocked.png` | `guard` → `blocked`; no tools for a customer-list / rule-bypass request |
+| `07-approval-approved-H-1107.png` | After **Simulate staff approval**: `create_return` + `SIM-LABEL-…` |
